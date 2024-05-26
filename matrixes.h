@@ -15,6 +15,7 @@ FMatrix *alloc_matrix(unsigned width,unsigned height);
 void delete_matrix(FMatrix *m);
 void fill_by_zeroes(matrixtype_t *data,unsigned width,unsigned height);
 void fill_by_ones(matrixtype_t *data,unsigned width,unsigned height);
-int check_result(matrixtype_t *data,unsigned width,unsigned height);
+void fill_by_pattern(matrixtype_t *data,unsigned width,unsigned height);
+int check_result(matrixtype_t *data,unsigned width,unsigned height,unsigned k);
 
 #endif

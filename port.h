@@ -51,6 +51,7 @@ typedef void *(*CThreadRoutine)(void*);
 
 int64_t get_nanotime(void);
 void set_thread_processor(int pnum);
+int get_thread_processor(void);
 
 THREAD_ID_TYPE start_thread(CThreadRoutine func,void *params,int pnum);
 void wait_thread(THREAD_ID_TYPE thread);

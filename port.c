@@ -40,6 +40,15 @@ void set_thread_processor(int pnum)
 #endif
 	}
 
+int get_thread_processor()
+	{
+#ifdef _WIN32
+	return GetCurrentProcessorNumber();
+#else
+	return sched_getcpu();
+#endif
+	}
+
 THREAD_ID_TYPE start_thread(CThreadRoutine func,void *params,int pnum)
 	{
 	THREAD_ID_TYPE rv;

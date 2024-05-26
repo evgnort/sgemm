@@ -12,12 +12,14 @@ typedef struct FCalcParamsTg
 	{
 	uint64_t sinhronizer; // Value for thread sinhcronisation
 	uint64_t sinhronizer2; // Value for thread sinhcronisation
+	uint32_t half_done[2];
 	char padding[CACHE_LINE_SIZE * 2 - sizeof(uint64_t)]; // Cache line paddings
 	matrixtype_t *A;
 	matrixtype_t *B;
 	matrixtype_t *C;
 	matrixtype_t *micro_A;
 	matrixtype_t *micro_B; // Buffer ITEMS_PER_CACHE_LINE * k_step
+	matrixtype_t alpha;
 	unsigned k_size; // height of B and width of A
 	unsigned n_size; // width of B and C
 	unsigned m_size; // height of A and C
@@ -26,7 +28,7 @@ typedef struct FCalcParamsTg
 	unsigned n_step;	
 	unsigned ap_stride; // Size of micro_A portion
 	unsigned k_full_step; // Full size of buffer k with padding for local variables
-	unsigned run_count;
+	unsigned error;
 	} FCalcParams;
 
 FCalcParams *create_params(const FMatrix *m1, const FMatrix *m2, FMatrix *res,double L1_kt, unsigned core_width, unsigned core_height);

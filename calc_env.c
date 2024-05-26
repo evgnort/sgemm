@@ -77,12 +77,14 @@ void update_params(FCalcParams *params,double L1_kt, unsigned core_width, unsign
 
 void reset_params(FCalcParams *params)
 	{
-	fill_by_ones(params->A,params->k_size,params->m_size);
+	fill_by_pattern(params->A,params->k_size,params->m_size);
 	fill_by_ones(params->B,params->n_size,params->k_size);
 	fill_by_zeroes(params->C,params->n_size,params->m_size);
 	params->sinhronizer = SYNC_NOT_STARTED;
 	params->sinhronizer2 = SYNC_NOT_STARTED;
-	params->run_count = 0;
+	params->half_done[0] = params->half_done[1] = 0;
+	params->alpha = 1.0;
+	params->error = 0;
 	}
 
 void free_params(FCalcParams *params)
