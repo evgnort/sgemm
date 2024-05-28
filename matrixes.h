@@ -4,11 +4,11 @@
 typedef float matrixtype_t;
 
 typedef struct FMatrixTg
-	{
-	unsigned width;
-	unsigned height;
-	matrixtype_t *data;
-	} FMatrix;
+   {
+   unsigned width;
+   unsigned height;
+   matrixtype_t *data;
+   } FMatrix;
 
 FMatrix *alloc_matrix(unsigned width,unsigned height);
 

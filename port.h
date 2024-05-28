@@ -8,7 +8,7 @@
 #include <intrin.h>
 
 const inline int posix_memalign(void **ptr, size_t align, size_t size)
-	{ *ptr = _aligned_malloc(size,align); return *ptr ? 0 : errno; }
+   { *ptr = _aligned_malloc(size,align); return *ptr ? 0 : errno; }
 
 #define posix_memalign_free _aligned_free
 
@@ -19,7 +19,7 @@ const inline int posix_memalign(void **ptr, size_t align, size_t size)
 typedef LPTHREAD_START_ROUTINE CThreadRoutine;
 
 const inline void maximizePriority(void)
-	{ SetPriorityClass(GetCurrentProcess(),REALTIME_PRIORITY_CLASS); }
+   { SetPriorityClass(GetCurrentProcess(),REALTIME_PRIORITY_CLASS); }
 
 #define SOFT_BARRIER _ReadWriteBarrier()
 
@@ -32,7 +32,7 @@ const inline void maximizePriority(void)
 #define posix_memalign_free free
 
 const inline void maximizePriority(void)
-	{ setpriority(PRIO_PROCESS, 0, -20); }
+   { setpriority(PRIO_PROCESS, 0, -20); }
 
 typedef void *(*CThreadRoutine)(void*);
 
