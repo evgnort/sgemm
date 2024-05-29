@@ -49,6 +49,15 @@ int get_thread_processor()
 #endif
    }
 
+void maximize_priority(void)
+	{
+#ifdef _WIN32
+   SetPriorityClass(GetCurrentProcess(),REALTIME_PRIORITY_CLASS);
+#else
+   setpriority(PRIO_PROCESS, 0, -20);
+#endif
+	}
+
 THREAD_ID_TYPE start_thread(CThreadRoutine func,void *params,int pnum)
    {
    THREAD_ID_TYPE rv;

@@ -27,7 +27,7 @@ typedef struct FCalcParamsTg
    unsigned m_step; // height of micro_A buffer
    unsigned n_step;   
    unsigned ap_stride; // Size of micro_A portion
-   unsigned k_full_step; // Full size of buffer k with padding for local variables
+   unsigned k_stride; // Full size of buffer k with padding for local variables
    unsigned error;
    } FCalcParams;
 

@@ -19,6 +19,9 @@
 #define PT_LEVEL _MM_HINT_T2
 //#define L1_RESERVE
 
+#define MAIN_CORE 2
+#define SIBLING_CORE 3
+
 #define MICROCORE_WIDTH 2
 #define MICROCORE_HEIGHT 6
 

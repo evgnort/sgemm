@@ -55,7 +55,7 @@ FCalcParams *create_params(const FMatrix *m1, const FMatrix *m2, FMatrix *res,do
 void update_params(FCalcParams *params,double L1_kt, unsigned core_width, unsigned core_height)
    {
    unsigned kstep = params->k_step = _get_k_step(params->k_size,L1_kt,core_width);
-   params->k_full_step = kstep + L1_RESERVE_LINES;
+   params->k_stride = kstep + L1_RESERVE_LINES;
    
    int ap_size = core_height * kstep;
    unsigned ap_step = ap_size * sizeof(matrixtype_t) / L1_STRIDE;

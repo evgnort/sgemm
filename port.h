@@ -18,9 +18,6 @@ const inline int posix_memalign(void **ptr, size_t align, size_t size)
 
 typedef LPTHREAD_START_ROUTINE CThreadRoutine;
 
-const inline void maximizePriority(void)
-   { SetPriorityClass(GetCurrentProcess(),REALTIME_PRIORITY_CLASS); }
-
 #define SOFT_BARRIER _ReadWriteBarrier()
 
 #else
@@ -30,9 +27,6 @@ const inline void maximizePriority(void)
 #include <sys/resource.h>
 
 #define posix_memalign_free free
-
-const inline void maximizePriority(void)
-   { setpriority(PRIO_PROCESS, 0, -20); }
 
 typedef void *(*CThreadRoutine)(void*);
 
@@ -52,6 +46,7 @@ typedef void *(*CThreadRoutine)(void*);
 int64_t get_nanotime(void);
 void set_thread_processor(int pnum);
 int get_thread_processor(void);
+void maximize_priority(void);
 
 THREAD_ID_TYPE start_thread(CThreadRoutine func,void *params,int pnum);
 void wait_thread(THREAD_ID_TYPE thread);

@@ -236,14 +236,38 @@ void one_6x16(FCalcParams *params)
             for (j = 0; j < npart; j += MICROCORE_WIDTH * ITEMS_PER_REGISTRY)
                { 
                if (!m)
-                  fill_micro_B_6x16(params->n_size,micro_B_height,&params->B[k * params->n_size + n + j],&params->micro_B[j * params->k_full_step]);
+                  fill_micro_B_6x16(params->n_size,micro_B_height,&params->B[k * params->n_size + n + j],&params->micro_B[j * params->k_stride]);
                for (i = 0, ni = 0; i < micro_A_height; i += MICROCORE_HEIGHT, ni++) // Пробег по вертикали матрицы A
-                  micro_core_6x16(params->alpha,micro_B_height,params->n_size,&params->micro_A[ni * params->ap_stride], &params->micro_B[j * params->k_full_step],&params->C[(m+i)*params->n_size + n + j]);
+                  micro_core_6x16(params->alpha,micro_B_height,params->n_size,&params->micro_A[ni * params->ap_stride], &params->micro_B[j * params->k_stride],&params->C[(m+i)*params->n_size + n + j]);
                }
             }
          }
       }
    }
+
+#ifdef COUNT_SYNC
+   #define INC_CORE_COUNT core_cnt++
+   #define INC_SYNC_COUNT(N) sync_cnt[(N)]++
+   #define INIT_COUNTS int core_cnt = 0,sync_cnt[2] = {0,0}
+   #define PRINTF_COUNTS(N) printf("%d: core: %d, sync: %d, %d\n",(N),core_cnt,sync_cnt[0],sync2_cnt[1])
+#else
+   #define INC_CORE_COUNT
+   #define INC_SYNC_COUNT(N)
+   #define INIT_COUNTS
+   #define PRINTF_COUNTS(N)
+#endif
+
+#define SYNC1to2(VAL,SYNC1,SYNC2,M,N,J,K) while ((VAL) != (SYNC2)) { _mm_pause(); INC_SYNC_COUNT(0); } \
+               (VAL) = ((uint64_t)(J) << 48) + ((uint64_t)(M) << 32) + ((uint64_t)(N) << 16) + (K); \
+               (SYNC1) = (VAL); SOFT_BARRIER;
+
+#define SYNC2to1(VAL,NVAL,SYNC1,SYNC2,CNTN) SOFT_BARRIER; (SYNC2) = (VAL); \
+               while ((VAL) == ((NVAL) = (SYNC1))) { _mm_pause(); INC_SYNC_COUNT((CNTN)); } \
+               (VAL) = (NVAL);
+
+#define SYNCHALF(VAL1,VAL2) (VAL1) = 1; SOFT_BARRIER; \
+         while (1 != (VAL2)) { _mm_pause(); } \
+         (VAL2) = 0;   SOFT_BARRIER;
 
 THREAD_FUNC ThreadProc_6x16(void *lpParameter)
    {
@@ -253,7 +277,7 @@ THREAD_FUNC ThreadProc_6x16(void *lpParameter)
    unsigned i,j,k,m,n,ni,prev_m = 0xFFFFFFFF;
    while (*sync == SYNC_NOT_STARTED)
       _mm_pause();
-   if (get_thread_processor() != 3)   params->error = 1;
+   if (get_thread_processor() != SIBLING_CORE)   params->error = 1;
    uint64_t npos, pos = *sync;
    while (pos != SYNC_FINISHED)
       {
@@ -270,13 +294,9 @@ THREAD_FUNC ThreadProc_6x16(void *lpParameter)
                               &params->micro_A[mah2 / MICROCORE_HEIGHT * params->ap_stride]), prev_m = m;
 
       for (ni = mah2 / MICROCORE_HEIGHT,i = micro_A_height / 2; i < micro_A_height; i += MICROCORE_HEIGHT,ni++) 
-         micro_core_6x16(params->alpha,micro_B_height,params->n_size,&params->micro_A[ni * params->ap_stride], &params->micro_B[j * params->k_full_step],&params->C[(m+i)*params->n_size + n + j]);
+         micro_core_6x16(params->alpha,micro_B_height,params->n_size,&params->micro_A[ni * params->ap_stride], &params->micro_B[j * params->k_stride],&params->C[(m+i)*params->n_size + n + j]);
 
-      SOFT_BARRIER;
-      *sync2 = pos;
-      while (pos == (npos = *sync))
-         _mm_pause();
-      pos = npos;
+      SYNC2to1(pos,npos,*sync,*sync2,0);
       }
    THREAD_RETURN(0);
    }
@@ -306,14 +326,11 @@ void half_6x16(FCalcParams *params)
             for (j = 0; j < npart; j += MICROCORE_WIDTH * ITEMS_PER_REGISTRY)
                { 
                if (!m)
-                  fill_micro_B_6x16(params->n_size,micro_B_height,&params->B[k * params->n_size + n + j],&params->micro_B[j * params->k_full_step]);
-               while (npos != *sync2)
-                  _mm_pause();
-               npos = ((uint64_t)j << 48) + ((uint64_t)m << 32) + ((uint64_t)n << 16) + k;
-               *sync = npos;
-               SOFT_BARRIER;
+                  fill_micro_B_6x16(params->n_size,micro_B_height,&params->B[k * params->n_size + n + j],&params->micro_B[j * params->k_stride]);
+               SYNC1to2(npos,*sync,*sync2,m,n,j,k);
+
                for (ni = 0,i = 0; i < mah2; i += MICROCORE_HEIGHT, ni++) // Пробег по вертикали матрицы A
-                  micro_core_6x16(params->alpha,micro_B_height,params->n_size,&params->micro_A[ni * params->ap_stride], &params->micro_B[j * params->k_full_step],&params->C[(m+i)*params->n_size + n + j]);
+                  micro_core_6x16(params->alpha,micro_B_height,params->n_size,&params->micro_A[ni * params->ap_stride], &params->micro_B[j * params->k_stride],&params->C[(m+i)*params->n_size + n + j]);
                }
             }
          }
@@ -380,6 +397,9 @@ void fill_micro_A_2x48_panel(int A_width, int micro_B_height, const matrixtype_t
       }
    }
 
+#ifdef _WIN32 // Ugly removing xmm store/load on each call under windows
+__forceinline 
+#endif 
 void micro_core_2x48(matrixtype_t alpha,unsigned B_height, unsigned C_width, const matrixtype_t *A, const matrixtype_t *B, matrixtype_t *C)
    {
    unsigned k;
@@ -569,24 +589,6 @@ void micro_core_2x48_fip(matrixtype_t alpha,unsigned B_height, unsigned N_size, 
    c05 = _mm256_fmadd_ps(b0,c15, _mm256_loadu_ps(C + ITEMS_PER_REGISTRY * 5));
    _mm256_storeu_ps(C + ITEMS_PER_REGISTRY * 5, c05);
    }
-
-#ifdef COUNT_SYNC
-   #define INC_CORE_COUNT core_cnt++
-   #define INC_SYNC_COUNT sync_cnt++
-   #define INC_SYNC_COUNT2 sync2_cnt++
-   #define INIT_COUNTS int sync_cnt = 0,sync2_cnt = 0,core_cnt = 0
-   #define PRINTF_COUNTS(N) printf("%d: core: %d, sync: %d, %d\n",(N),core_cnt,sync_cnt,sync2_cnt)
-#else
-   #define INC_CORE_COUNT
-   #define INC_SYNC_COUNT
-   #define INC_SYNC_COUNT2
-   #define INIT_COUNTS
-   #define PRINTF_COUNTS(N)
-#endif
-
-#define SYNCHALF(VAL1,VAL2) (VAL1) = 1; SOFT_BARRIER; \
-         while (1 != (VAL2)) { _mm_pause(); } \
-         (VAL2) = 0;   SOFT_BARRIER;
 
 void micro_core_2x48_fip_h1(matrixtype_t alpha,unsigned B_height, unsigned N_size, const matrixtype_t *A, const matrixtype_t *B, matrixtype_t *mB, matrixtype_t *C,
                               volatile unsigned *sync)
@@ -822,9 +824,9 @@ void one_2x48(FCalcParams *params)
             for (j = 0; j < npart; j += MICROCORE_WIDTH_2 * ITEMS_PER_REGISTRY)
                {
                if (!m)
-                  fill_micro_B_2x48(params->n_size,micro_B_height,&params->B[k * params->n_size + n + j],&params->micro_B[j * params->k_full_step]);
+                  fill_micro_B_2x48(params->n_size,micro_B_height,&params->B[k * params->n_size + n + j],&params->micro_B[j * params->k_stride]);
                for (ni = 0,i = 0; i < micro_A_height; i += MICROCORE_HEIGHT_2, ni++)
-                  micro_core_2x48(params->alpha,micro_B_height,params->n_size,&params->micro_A[ni * params->ap_stride], &params->micro_B[j * params->k_full_step],&params->C[(m+i)*params->n_size + n + j]);
+                  micro_core_2x48(params->alpha,micro_B_height,params->n_size,&params->micro_A[ni * params->ap_stride], &params->micro_B[j * params->k_stride],&params->C[(m+i)*params->n_size + n + j]);
                }
             }
          }
@@ -860,11 +862,11 @@ void one_2x48_fip(FCalcParams *params)
          for (j = MICROCORE_WIDTH_2 * ITEMS_PER_REGISTRY; j < npart; j += MICROCORE_WIDTH_2 * ITEMS_PER_REGISTRY)
             {            
             micro_core_2x48_fip(params->alpha,micro_B_height,params->n_size,params->micro_A,&params->B[k * params->n_size + n + j],
-                                    &params->micro_B[j * params->k_full_step],&params->C[n + j]);
+                                    &params->micro_B[j * params->k_stride],&params->C[n + j]);
             for (ni = 1,i = MICROCORE_HEIGHT_2; i < micro_A_height; i += MICROCORE_HEIGHT_2, ni++)
                {
                micro_core_2x48(params->alpha,micro_B_height,params->n_size,&params->micro_A[ni * params->ap_stride],
-                                       &params->micro_B[j * params->k_full_step],&params->C[i*params->n_size + n + j]);
+                                       &params->micro_B[j * params->k_stride],&params->C[i*params->n_size + n + j]);
                }
             }
 
@@ -883,7 +885,7 @@ void one_2x48_fip(FCalcParams *params)
                { // m != 0; j != 0
                for (ni = 0,i = 0; i < micro_A_height; i += MICROCORE_HEIGHT_2, ni++)
                   {
-                  micro_core_2x48(params->alpha,micro_B_height,params->n_size,&params->micro_A[ni * params->ap_stride], &params->micro_B[j * params->k_full_step],&params->C[(m+i)*params->n_size + n + j]);
+                  micro_core_2x48(params->alpha,micro_B_height,params->n_size,&params->micro_A[ni * params->ap_stride], &params->micro_B[j * params->k_stride],&params->C[(m+i)*params->n_size + n + j]);
                   }
                }
             }
@@ -902,7 +904,7 @@ THREAD_FUNC ThreadProc_2x48_sym_fip(void *lpParameter)
 
    while (*sync == SYNC_NOT_STARTED)
       _mm_pause();
-   if (get_thread_processor() != 3)   params->error = 1;
+   if (get_thread_processor() != SIBLING_CORE)   params->error = 1;
    uint64_t npos, pos = *sync;
 
    while (pos != SYNC_FINISHED)
@@ -938,7 +940,7 @@ THREAD_FUNC ThreadProc_2x48_sym_fip(void *lpParameter)
          else
             {
             micro_core_2x48_fip_h2(params->alpha,micro_B_height,params->n_size,mA,&params->B[k * params->n_size + n + j],
-                                    &params->micro_B[j * params->k_full_step],&params->C[mah2*params->n_size + n + j],params->half_done);
+                                    &params->micro_B[j * params->k_stride],&params->C[mah2*params->n_size + n + j],params->half_done);
             INC_CORE_COUNT;
 
             for (i = mah2 + MICROCORE_HEIGHT_2; i < micro_A_height; i += MICROCORE_HEIGHT_2) 
@@ -966,37 +968,18 @@ THREAD_FUNC ThreadProc_2x48_sym_fip(void *lpParameter)
             {
             for (i = mah2; i < micro_A_height; i += MICROCORE_HEIGHT_2) 
                {
-               micro_core_2x48(params->alpha,micro_B_height,params->n_size,mA,&params->micro_B[j * params->k_full_step],&params->C[(m+i)*params->n_size + n + j]);
+               micro_core_2x48(params->alpha,micro_B_height,params->n_size,mA,&params->micro_B[j * params->k_stride],&params->C[(m+i)*params->n_size + n + j]);
                mA += params->ap_stride;
                INC_CORE_COUNT;
                }
             }
          }
 
-      SOFT_BARRIER;
-      *sync2 = pos;
-      while (pos == (npos = *sync))
-         { 
-         _mm_pause();
-         INC_SYNC_COUNT;
-         }
-      pos = npos;
+      SYNC2to1(pos,npos,*sync,*sync2,0);
       }
    PRINTF_COUNTS(2);
    THREAD_RETURN(0);
    }
-
-#define SYNC1to2(VAL,SYNC1,SYNC2,M,N,J,K) while ((VAL) != (SYNC2)) { _mm_pause(); INC_SYNC_COUNT; } \
-               (VAL) = ((uint64_t)(J) << 48) + ((uint64_t)(M) << 32) + ((uint64_t)(N) << 16) + (K); \
-               (SYNC1) = (VAL); SOFT_BARRIER;
-
-#define SYNC2to1(VAL,NVAL,SYNC1,SYNC2) SOFT_BARRIER; (SYNC2) = (VAL); \
-               while ((VAL) == ((NVAL) = (SYNC1))) { _mm_pause(); INC_SYNC_COUNT; } \
-               (VAL) = (NVAL);
-
-#define SYNC2to1_2(VAL,NVAL,SYNC1,SYNC2) SOFT_BARRIER; (SYNC2) = (VAL); \
-               while ((VAL) == ((NVAL) = (SYNC1))) { _mm_pause(); INC_SYNC_COUNT2; } \
-               (VAL) = (NVAL);
 
 void half_2x48_fip(FCalcParams *params)
    {
@@ -1036,13 +1019,13 @@ void half_2x48_fip(FCalcParams *params)
             {
             SYNC1to2(npos,*sync,*sync2,0,n,j,k);
 
-            micro_core_2x48_fip_h1(params->alpha,micro_B_height,params->n_size,params->micro_A,&params->B[k * params->n_size + n + j],&params->micro_B[j * params->k_full_step],
+            micro_core_2x48_fip_h1(params->alpha,micro_B_height,params->n_size,params->micro_A,&params->B[k * params->n_size + n + j],&params->micro_B[j * params->k_stride],
                                     &params->C[n + j],params->half_done);
             INC_CORE_COUNT;
                
             for (ni = 1,i = MICROCORE_HEIGHT_2; i < mah2; i += MICROCORE_HEIGHT_2, ni++) 
                {
-               micro_core_2x48(params->alpha,micro_B_height,params->n_size,&params->micro_A[ni * params->ap_stride], &params->micro_B[j * params->k_full_step],
+               micro_core_2x48(params->alpha,micro_B_height,params->n_size,&params->micro_A[ni * params->ap_stride], &params->micro_B[j * params->k_stride],
                                     &params->C[i*params->n_size + n + j]);
                INC_CORE_COUNT;
                }
@@ -1070,7 +1053,7 @@ void half_2x48_fip(FCalcParams *params)
                
                for (ni = 0,i = 0; i < mah2; i += MICROCORE_HEIGHT_2, ni++) 
                   {
-                  micro_core_2x48(params->alpha,micro_B_height,params->n_size,&params->micro_A[ni * params->ap_stride], &params->micro_B[j * params->k_full_step],&params->C[(m+i)*params->n_size + n + j]);
+                  micro_core_2x48(params->alpha,micro_B_height,params->n_size,&params->micro_A[ni * params->ap_stride], &params->micro_B[j * params->k_stride],&params->C[(m+i)*params->n_size + n + j]);
                   INC_CORE_COUNT;
                   }
                }
@@ -1079,6 +1062,8 @@ void half_2x48_fip(FCalcParams *params)
       }
    PRINTF_COUNTS(1);
    }
+
+#define B_FILL_DELAY (MICROCORE_HEIGHT_2 * 5)
 
 THREAD_FUNC ThreadProc_2x48_sym(void *lpParameter)
    {
@@ -1091,50 +1076,73 @@ THREAD_FUNC ThreadProc_2x48_sym(void *lpParameter)
 
    while (*sync == SYNC_NOT_STARTED)
       _mm_pause();
-   if (get_thread_processor() != 3)   params->error = 1;
+   if (get_thread_processor() != SIBLING_CORE)   params->error = 1;
    uint64_t npos, pos = *sync;
-   while (pos != SYNC_FINISHED)
-      {
-      k = pos & 0xFFFF;
-      n = (pos >> 16) & 0xFFFF;
-      m = (pos >> 32) & 0xFFFF;
-      j = (pos >> 48) & 0xFFFF;
-      unsigned micro_B_height = min(params->k_size, k + params->k_step) - k;
-      unsigned micro_A_height = min(params->m_size, m + params->m_step) - m;
-      unsigned mah2 = micro_A_height / 2;
 
-      if (!m)
-         mah2 -= MICROCORE_HEIGHT_2 * 2;
+   for(n = 0; n < params->n_size; n += params->n_step)
+      { 
+      unsigned npart = min(params->n_size, n + params->n_step) - n;
 
-      if (!j)
-         {
+      for(k = 0; k < params->k_size; k += params->k_step)
+         { 
+         unsigned micro_B_height = min(params->k_size, k + params->k_step) - k;
+         unsigned micro_A_height = params->m_step;
+         unsigned mah2 = micro_A_height / 2 - B_FILL_DELAY;
+         m = j = 0;
+
          for (i = mah2, mA = &params->micro_A[mah2 / MICROCORE_HEIGHT_2 * params->ap_stride]; i < micro_A_height; i += MICROCORE_HEIGHT_2, mA += params->ap_stride) 
             {
-            fill_micro_A_2x48_panel(params->k_size,micro_B_height,&params->A[(m+i)*params->k_size + k],mA);
-            micro_core_2x48(params->alpha,micro_B_height,params->n_size,mA, &params->micro_B[j * params->k_full_step],&params->C[(m+i)*params->n_size + n + j]);
+            fill_micro_A_2x48_panel(params->k_size,micro_B_height,&params->A[i*params->k_size + k],mA);
+            micro_core_2x48(params->alpha,micro_B_height,params->n_size,mA, params->micro_B,&params->C[i*params->n_size + n]);
             INC_CORE_COUNT;
-            }
-         }
-      else
-         {
-         for (i = mah2, mA = &params->micro_A[mah2 / MICROCORE_HEIGHT_2 * params->ap_stride]; i < micro_A_height; i += MICROCORE_HEIGHT_2, mA += params->ap_stride) 
-            {
-            micro_core_2x48(params->alpha,micro_B_height,params->n_size,mA, &params->micro_B[j * params->k_full_step],&params->C[(m+i)*params->n_size + n + j]);
-            INC_CORE_COUNT;
-            }
-         }
+             }
+         SYNC2to1(pos,npos,*sync,*sync2,1);
 
-      SYNC2to1(pos,npos,*sync,*sync2);
+         for (j = MICROCORE_WIDTH_2 * ITEMS_PER_REGISTRY; j < npart; j += MICROCORE_WIDTH_2 * ITEMS_PER_REGISTRY)
+            {
+            for (i = mah2, mA = &params->micro_A[mah2 / MICROCORE_HEIGHT_2 * params->ap_stride]; i < micro_A_height; i += MICROCORE_HEIGHT_2, mA += params->ap_stride) 
+               {
+               micro_core_2x48(params->alpha,micro_B_height,params->n_size,mA, &params->micro_B[j * params->k_stride],&params->C[i*params->n_size + n + j]);
+               INC_CORE_COUNT;
+               }
+            SYNC2to1(pos,npos,*sync,*sync2,1);
+            }
+
+         for (m = params->m_step; m < params->m_size; m += params->m_step)
+            { 
+            micro_A_height = min(params->m_size, m + params->m_step) - m;
+            mah2 = micro_A_height / 2;
+            j = 0;
+               
+            for (i = mah2, mA = &params->micro_A[mah2 / MICROCORE_HEIGHT_2 * params->ap_stride]; i < micro_A_height; i += MICROCORE_HEIGHT_2, mA += params->ap_stride) 
+               {
+               fill_micro_A_2x48_panel(params->k_size,micro_B_height,&params->A[(m+i)*params->k_size + k],mA);
+               micro_core_2x48(params->alpha,micro_B_height,params->n_size,mA, params->micro_B,&params->C[(m+i)*params->n_size + n]);
+               INC_CORE_COUNT;
+               }
+            SYNC2to1(pos,npos,*sync,*sync2,0);
+
+            for (j = MICROCORE_WIDTH_2 * ITEMS_PER_REGISTRY; j < npart; j += MICROCORE_WIDTH_2 * ITEMS_PER_REGISTRY)
+               {
+               for (i = mah2, mA = &params->micro_A[mah2 / MICROCORE_HEIGHT_2 * params->ap_stride]; i < micro_A_height; i += MICROCORE_HEIGHT_2, mA += params->ap_stride) 
+                  {
+                  micro_core_2x48(params->alpha,micro_B_height,params->n_size,mA, &params->micro_B[j * params->k_stride],&params->C[(m+i)*params->n_size + n + j]);
+                  INC_CORE_COUNT;
+                  }
+               SYNC2to1(pos,npos,*sync,*sync2,0);
+               }
+            }
+         }
       }
    PRINTF_COUNTS(2);
    THREAD_RETURN(0);
    }
 
 // Do nothing usefull, just stall for some cycles
-#define GRAIN    _mm_prefetch((const char *) &params->micro_B[j * params->k_full_step],_MM_HINT_T0); \
-            _mm_prefetch((const char *) &params->micro_B[j * params->k_full_step + 1],_MM_HINT_T0); \
-            _mm_prefetch((const char *) &params->micro_B[j * params->k_full_step + 2],_MM_HINT_T0); \
-            _mm_prefetch((const char *) &params->micro_B[j * params->k_full_step + 3],_MM_HINT_T0)
+#define GRAIN    _mm_prefetch((const char *) &params->micro_B[j * params->k_stride],_MM_HINT_T0); \
+            _mm_prefetch((const char *) &params->micro_B[j * params->k_stride + 1],_MM_HINT_T0); \
+            _mm_prefetch((const char *) &params->micro_B[j * params->k_stride + 2],_MM_HINT_T0); \
+            _mm_prefetch((const char *) &params->micro_B[j * params->k_stride + 3],_MM_HINT_T0)
 
 THREAD_FUNC ThreadProc_2x48_asym(void *lpParameter)
    {
@@ -1147,7 +1155,7 @@ THREAD_FUNC ThreadProc_2x48_asym(void *lpParameter)
 
    while (*sync == SYNC_NOT_STARTED)
       _mm_pause();
-   if (get_thread_processor() != 3)   params->error = 1;
+   if (get_thread_processor() != SIBLING_CORE)   params->error = 1;
    uint64_t npos, pos = *sync;
 
    for(n = 0; n < params->n_size; n += params->n_step)
@@ -1158,39 +1166,39 @@ THREAD_FUNC ThreadProc_2x48_asym(void *lpParameter)
          { 
          unsigned micro_B_height = min(params->k_size, k + params->k_step) - k;
          unsigned micro_A_height = params->m_step;
-         unsigned mah2 = micro_A_height / 2 - MICROCORE_HEIGHT_2 * 4;
+         unsigned mah2 = micro_A_height / 2 - B_FILL_DELAY;
          m = j = 0;
 
          for (i = mah2, mA = &params->micro_A[mah2 / MICROCORE_HEIGHT_2 * params->ap_stride]; i < micro_A_height; i += MICROCORE_HEIGHT_2, mA += params->ap_stride) 
             {
-            fill_micro_A_2x48_panel(params->k_size,micro_B_height,&params->A[(m+i)*params->k_size + k],mA);
-            micro_core_2x48(params->alpha,micro_B_height,params->n_size,mA, &params->micro_B[j * params->k_full_step],&params->C[(m+i)*params->n_size + n + j]);
+            fill_micro_A_2x48_panel(params->k_size,micro_B_height,&params->A[i*params->k_size + k],mA);
+            micro_core_2x48(params->alpha,micro_B_height,params->n_size,mA, params->micro_B,&params->C[i*params->n_size + n]);
             INC_CORE_COUNT;
             GRAIN;
             }
-         SYNC2to1_2(pos,npos,*sync,*sync2);
+         SYNC2to1(pos,npos,*sync,*sync2,1);
 
          for (j = MICROCORE_WIDTH_2 * ITEMS_PER_REGISTRY; j < npart; j += MICROCORE_WIDTH_2 * ITEMS_PER_REGISTRY)
             {
             for (i = mah2, mA = &params->micro_A[mah2 / MICROCORE_HEIGHT_2 * params->ap_stride]; i < micro_A_height; i += MICROCORE_HEIGHT_2, mA += params->ap_stride) 
                {
-               micro_core_2x48(params->alpha,micro_B_height,params->n_size,mA, &params->micro_B[j * params->k_full_step],&params->C[(m+i)*params->n_size + n + j]);
+               micro_core_2x48(params->alpha,micro_B_height,params->n_size,mA, &params->micro_B[j * params->k_stride],&params->C[i*params->n_size + n + j]);
                INC_CORE_COUNT;
                GRAIN;
                }
-            SYNC2to1_2(pos,npos,*sync,*sync2);
+            SYNC2to1(pos,npos,*sync,*sync2,1);
             }
 
          for (m = params->m_step; m < params->m_size; m += params->m_step)
             { 
-            unsigned micro_A_height = min(params->m_size, m + params->m_step) - m;
-            unsigned mah2 = micro_A_height / 2;
+            micro_A_height = min(params->m_size, m + params->m_step) - m;
+            mah2 = micro_A_height / 2;
             j = 0;
                
             for (i = mah2, mA = &params->micro_A[mah2 / MICROCORE_HEIGHT_2 * params->ap_stride]; i < micro_A_height; i += MICROCORE_HEIGHT_2, mA += params->ap_stride) 
                {
                fill_micro_A_2x48_panel(params->k_size,micro_B_height,&params->A[(m+i)*params->k_size + k],mA);
-               micro_core_2x48(params->alpha,micro_B_height,params->n_size,mA, &params->micro_B[j * params->k_full_step],&params->C[(m+i)*params->n_size + n + j]);
+               micro_core_2x48(params->alpha,micro_B_height,params->n_size,mA, params->micro_B,&params->C[(m+i)*params->n_size + n]);
                INC_CORE_COUNT;
                GRAIN;
                }
@@ -1199,12 +1207,12 @@ THREAD_FUNC ThreadProc_2x48_asym(void *lpParameter)
                {
                for (i = mah2, mA = &params->micro_A[mah2 / MICROCORE_HEIGHT_2 * params->ap_stride]; i < micro_A_height; i += MICROCORE_HEIGHT_2, mA += params->ap_stride) 
                   {
-                  micro_core_2x48(params->alpha,micro_B_height,params->n_size,mA, &params->micro_B[j * params->k_full_step],&params->C[(m+i)*params->n_size + n + j]);
+                  micro_core_2x48(params->alpha,micro_B_height,params->n_size,mA, &params->micro_B[j * params->k_stride],&params->C[(m+i)*params->n_size + n + j]);
                   INC_CORE_COUNT;
                   GRAIN;
                   }
                }
-            SYNC2to1(pos,npos,*sync,*sync2);
+            SYNC2to1(pos,npos,*sync,*sync2,0);
             }
          }
       }
@@ -1229,42 +1237,41 @@ void half_2x48(FCalcParams *params)
          { 
          unsigned micro_B_height = min(params->k_size, k + params->k_step) - k;
          unsigned micro_A_height = params->m_step;
-         unsigned mah2 = micro_A_height / 2 - MICROCORE_HEIGHT_2 * 2;
+         unsigned mah2 = micro_A_height / 2 - B_FILL_DELAY;
          m = j = 0;
 
-         fill_micro_B_2x48(params->n_size,micro_B_height,&params->B[k * params->n_size + n + j],&params->micro_B[j * params->k_full_step]);
+         fill_micro_B_2x48(params->n_size,micro_B_height,&params->B[k * params->n_size + n + j],params->micro_B);
          SYNC1to2(npos,*sync,*sync2,m,n,j,k);
                
          for (i = 0, mA = params->micro_A; i < mah2; i += MICROCORE_HEIGHT_2, mA += params->ap_stride) 
             {
-            fill_micro_A_2x48_panel(params->k_size,micro_B_height,&params->A[(m+i)*params->k_size + k],mA);
-            micro_core_2x48(params->alpha,micro_B_height,params->n_size,mA, &params->micro_B[j * params->k_full_step],&params->C[(m+i)*params->n_size + n + j]);
+            fill_micro_A_2x48_panel(params->k_size,micro_B_height,&params->A[i*params->k_size + k],mA);
+            micro_core_2x48(params->alpha,micro_B_height,params->n_size,mA, params->micro_B,&params->C[i * params->n_size + n + j]);
             INC_CORE_COUNT;
             }
 
          for (j = MICROCORE_WIDTH_2 * ITEMS_PER_REGISTRY; j < npart; j += MICROCORE_WIDTH_2 * ITEMS_PER_REGISTRY)
             {
-            fill_micro_B_2x48(params->n_size,micro_B_height,&params->B[k * params->n_size + n + j],&params->micro_B[j * params->k_full_step]);
+            fill_micro_B_2x48(params->n_size,micro_B_height,&params->B[k * params->n_size + n + j],&params->micro_B[j * params->k_stride]);
             SYNC1to2(npos,*sync,*sync2,m,n,j,k);
                
             for (i = 0, mA = params->micro_A; i < mah2; i += MICROCORE_HEIGHT_2, mA += params->ap_stride) 
                {
-               micro_core_2x48(params->alpha,micro_B_height,params->n_size,mA, &params->micro_B[j * params->k_full_step],&params->C[(m+i)*params->n_size + n + j]);
+               micro_core_2x48(params->alpha,micro_B_height,params->n_size,mA, &params->micro_B[j * params->k_stride],&params->C[(m+i)*params->n_size + n + j]);
                INC_CORE_COUNT;
                }
             }
 
          for (m = params->m_step; m < params->m_size; m += params->m_step)
             { 
-            unsigned micro_A_height = min(params->m_size, m + params->m_step) - m;
-            unsigned mah2 = micro_A_height / 2;
-            j = 0;
+            micro_A_height = min(params->m_size, m + params->m_step) - m;
+            mah2 = micro_A_height / 2;
                
-            SYNC1to2(npos,*sync,*sync2,m,n,j,k);
+            SYNC1to2(npos,*sync,*sync2,m,n,0,k);
             for (i = 0, mA = params->micro_A; i < mah2; i += MICROCORE_HEIGHT_2, mA += params->ap_stride) 
                {
                fill_micro_A_2x48_panel(params->k_size,micro_B_height,&params->A[(m+i)*params->k_size + k],mA);
-               micro_core_2x48(params->alpha,micro_B_height,params->n_size,mA, &params->micro_B[j * params->k_full_step],&params->C[(m+i)*params->n_size + n + j]);
+               micro_core_2x48(params->alpha,micro_B_height,params->n_size,mA, params->micro_B,&params->C[(m+i)*params->n_size + n]);
                INC_CORE_COUNT;
                }
 
@@ -1273,7 +1280,7 @@ void half_2x48(FCalcParams *params)
                SYNC1to2(npos,*sync,*sync2,m,n,j,k);
                for (i = 0, mA = params->micro_A; i < mah2; i += MICROCORE_HEIGHT_2, mA += params->ap_stride) 
                   {
-                  micro_core_2x48(params->alpha,micro_B_height,params->n_size,mA, &params->micro_B[j * params->k_full_step],&params->C[(m+i)*params->n_size + n + j]);
+                  micro_core_2x48(params->alpha,micro_B_height,params->n_size,mA, &params->micro_B[j * params->k_stride],&params->C[(m+i)*params->n_size + n + j]);
                   INC_CORE_COUNT;
                   }
                }
@@ -1300,42 +1307,40 @@ void half_2x48_rare_sync(FCalcParams *params)
          { 
          unsigned micro_B_height = min(params->k_size, k + params->k_step) - k;
          unsigned micro_A_height = params->m_step;
-         unsigned mah2 = micro_A_height / 2 - MICROCORE_HEIGHT_2 * 4;
-         m = j = 0;
+         unsigned mah2 = micro_A_height / 2 - B_FILL_DELAY;
 
-         fill_micro_B_2x48(params->n_size,micro_B_height,&params->B[k * params->n_size + n + j],&params->micro_B[j * params->k_full_step]);
-         SYNC1to2(npos,*sync,*sync2,m,n,j,k);
+         fill_micro_B_2x48(params->n_size,micro_B_height,&params->B[k * params->n_size + n],params->micro_B);
+         SYNC1to2(npos,*sync,*sync2,0,n,0,k);
                
          for (i = 0, mA = params->micro_A; i < mah2; i += MICROCORE_HEIGHT_2, mA += params->ap_stride) 
             {
-            fill_micro_A_2x48_panel(params->k_size,micro_B_height,&params->A[(m+i)*params->k_size + k],mA);
-            micro_core_2x48(params->alpha,micro_B_height,params->n_size,mA, &params->micro_B[j * params->k_full_step],&params->C[(m+i)*params->n_size + n + j]);
+            fill_micro_A_2x48_panel(params->k_size,micro_B_height,&params->A[i*params->k_size + k],mA);
+            micro_core_2x48(params->alpha,micro_B_height,params->n_size,mA, params->micro_B,&params->C[i*params->n_size + n]);
             INC_CORE_COUNT;
             }
 
          for (j = MICROCORE_WIDTH_2 * ITEMS_PER_REGISTRY; j < npart; j += MICROCORE_WIDTH_2 * ITEMS_PER_REGISTRY)
             {
-            fill_micro_B_2x48(params->n_size,micro_B_height,&params->B[k * params->n_size + n + j],&params->micro_B[j * params->k_full_step]);
-            SYNC1to2(npos,*sync,*sync2,m,n,j,k);
+            fill_micro_B_2x48(params->n_size,micro_B_height,&params->B[k * params->n_size + n + j],&params->micro_B[j * params->k_stride]);
+            SYNC1to2(npos,*sync,*sync2,0,n,j,k);
                
             for (i = 0, mA = params->micro_A; i < mah2; i += MICROCORE_HEIGHT_2, mA += params->ap_stride) 
                {
-               micro_core_2x48(params->alpha,micro_B_height,params->n_size,mA, &params->micro_B[j * params->k_full_step],&params->C[(m+i)*params->n_size + n + j]);
+               micro_core_2x48(params->alpha,micro_B_height,params->n_size,mA, &params->micro_B[j * params->k_stride],&params->C[i*params->n_size + n + j]);
                INC_CORE_COUNT;
                }
             }
 
          for (m = params->m_step; m < params->m_size; m += params->m_step)
             { 
-            unsigned micro_A_height = min(params->m_size, m + params->m_step) - m;
-            unsigned mah2 = micro_A_height / 2;
-            j = 0;
+            micro_A_height = min(params->m_size, m + params->m_step) - m;
+            mah2 = micro_A_height / 2;
             SYNC1to2(npos,*sync,*sync2,m,n,0,k);
                
             for (i = 0, mA = params->micro_A; i < mah2; i += MICROCORE_HEIGHT_2, mA += params->ap_stride) 
                {
                fill_micro_A_2x48_panel(params->k_size,micro_B_height,&params->A[(m+i)*params->k_size + k],mA);
-               micro_core_2x48(params->alpha,micro_B_height,params->n_size,mA, &params->micro_B[j * params->k_full_step],&params->C[(m+i)*params->n_size + n + j]);
+               micro_core_2x48(params->alpha,micro_B_height,params->n_size,mA,params->micro_B,&params->C[(m+i)*params->n_size + n]);
                INC_CORE_COUNT;
                }
 
@@ -1343,7 +1348,7 @@ void half_2x48_rare_sync(FCalcParams *params)
                {
                for (i = 0, mA = params->micro_A; i < mah2; i += MICROCORE_HEIGHT_2, mA += params->ap_stride) 
                   {
-                  micro_core_2x48(params->alpha,micro_B_height,params->n_size,mA, &params->micro_B[j * params->k_full_step],&params->C[(m+i)*params->n_size + n + j]);
+                  micro_core_2x48(params->alpha,micro_B_height,params->n_size,mA, &params->micro_B[j * params->k_stride],&params->C[(m+i)*params->n_size + n + j]);
                   INC_CORE_COUNT;
                   }
                }
@@ -1385,7 +1390,7 @@ void measure(char *name,CMMFunc func,CThreadRoutine thread,FCalcParams *params)
    THREAD_ID_TYPE thid = 0;
 
    double avg = 0;
-   if (get_thread_processor() != 2)
+   if (get_thread_processor() != MAIN_CORE)
       {
       printf("%15s   failed to run on cpu 2\n",name);
       return;
@@ -1395,7 +1400,7 @@ void measure(char *name,CMMFunc func,CThreadRoutine thread,FCalcParams *params)
       reset_params(params);
 
       if (thread)
-         start_thread(thread,params,3);
+         thid = start_thread(thread,params,SIBLING_CORE);
 
       int64_t t1 = get_nanotime();
       func(params);
@@ -1419,8 +1424,8 @@ void measure(char *name,CMMFunc func,CThreadRoutine thread,FCalcParams *params)
 
 int main(void)
    {
-   maximizePriority();
-   set_thread_processor(2);
+   maximize_priority();
+   set_thread_processor(MAIN_CORE);
 
    FMatrix *A = alloc_matrix(MATRIX_SIZE,MATRIX_SIZE);
    FMatrix *B = alloc_matrix(MATRIX_SIZE,MATRIX_SIZE);
@@ -1458,6 +1463,7 @@ int main(void)
    delete_matrix(B);
    delete_matrix(C);
 
+   printf("Press any key\n");
    getchar();
    return 0;
    }
